@@ -1,0 +1,349 @@
+import json
+
+notebook = {
+    "cells": [
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "# 🛡️ FraudShield AI: Machine Learning & SHAP Explainability Pipeline\n",
+                "### Automated Insurance & Loan Claim Fraud Detection System\n",
+                "---\n",
+                "This notebook demonstrates the end-to-end Machine Learning and Explainable AI (XAI) pipeline powering **FraudShield AI**:\n",
+                "1. **Exploratory Data Analysis (EDA)** on the Kaggle Vehicle Insurance Fraud dataset (`fraud_oracle` schema)\n",
+                "2. **Feature Engineering & Preprocessing** with Scikit-Learn `ColumnTransformer` (One-Hot Encoding + Standard Scaling)\n",
+                "3. **Model Selection & Training** with **XGBoost Classifier** (`scale_pos_weight` for class imbalance)\n",
+                "4. **Performance Evaluation**: Accuracy, Precision, Recall, F1-Score, ROC-AUC, and Confusion Matrix\n",
+                "5. **Model Explainability with SHAP (SHapley Additive exPlanations)**: TreeExplainer, Global Summary Plots, and Per-Claim Local Explanations"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## 1. Setup & Environment Imports"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "import os\n",
+                "import json\n",
+                "import joblib\n",
+                "import numpy as np\n",
+                "import pandas as pd\n",
+                "import matplotlib.pyplot as plt\n",
+                "\n",
+                "import xgboost as xgb\n",
+                "import shap\n",
+                "\n",
+                "from sklearn.model_selection import train_test_split\n",
+                "from sklearn.preprocessing import StandardScaler, OneHotEncoder\n",
+                "from sklearn.compose import ColumnTransformer\n",
+                "from sklearn.metrics import (\n",
+                "    accuracy_score, precision_score, recall_score, f1_score,\n",
+                "    roc_auc_score, confusion_matrix, classification_report, roc_curve\n",
+                ")\n",
+                "\n",
+                "print(\"All libraries successfully imported!\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## 2. Load the Dataset\n",
+                "The dataset follows the standard **Kaggle Vehicle Insurance Claim Fraud Detection** benchmark (`fraud_oracle`).\n",
+                "It contains 33 features covering:\n",
+                "- **Demographics**: `Age`, `Sex`, `MaritalStatus`\n",
+                "- **Policy Details**: `PolicyType`, `VehicleCategory`, `VehiclePrice`, `Deductible`, `DriverRating`\n",
+                "- **Incident & Timing**: `Days_Policy_Accident`, `Days_Policy_Claim`, `Month`, `DayOfWeek`\n",
+                "- **Risk Indicators**: `PoliceReportFiled`, `WitnessPresent`, `Fault`, `PastNumberOfClaims`, `AddressChange_Claim`, `ClaimAmount`\n",
+                "- **Target**: `FraudFound_P` (1 = Fraudulent Claim, 0 = Legitimate Claim)"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "data_path = os.path.join(\"..\", \"data\", \"raw\", \"vehicle_fraud_dataset.csv\")\n",
+                "df = pd.read_csv(data_path)\n",
+                "print(f\"Dataset Shape: {df.shape[0]} rows, {df.shape[1]} columns\")\n",
+                "print(\"Fraud Distribution:\")\n",
+                "print(df['FraudFound_P'].value_counts(normalize=True).round(3) * 100)\n",
+                "df.head()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## 3. Feature Definitions (Numerical vs Categorical)"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "NUMERIC_FEATURES = [\n",
+                "    'Age', 'Deductible', 'DriverRating', 'ClaimAmount',\n",
+                "    'WeekOfMonth', 'WeekOfMonthClaimed', 'Year'\n",
+                "]\n",
+                "\n",
+                "CATEGORICAL_FEATURES = [\n",
+                "    'Month', 'DayOfWeek', 'Make', 'AccidentArea', 'Sex',\n",
+                "    'MaritalStatus', 'Fault', 'PolicyType', 'VehicleCategory',\n",
+                "    'VehiclePrice', 'Days_Policy_Accident', 'Days_Policy_Claim',\n",
+                "    'PastNumberOfClaims', 'AgeOfVehicle', 'AgeOfPolicyHolder',\n",
+                "    'PoliceReportFiled', 'WitnessPresent', 'AgentType',\n",
+                "    'NumberOfSupplements', 'AddressChange_Claim', 'NumberOfCars',\n",
+                "    'BasePolicy'\n",
+                "]\n",
+                "\n",
+                "TARGET = 'FraudFound_P'\n",
+                "print(f\"Defined {len(NUMERIC_FEATURES)} numeric and {len(CATEGORICAL_FEATURES)} categorical features.\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## 4. Preprocessing Pipeline (`ColumnTransformer`)\n",
+                "We use `StandardScaler` for numeric columns and `OneHotEncoder` with `handle_unknown='ignore'` for categorical columns."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "X = df[NUMERIC_FEATURES + CATEGORICAL_FEATURES]\n",
+                "y = df[TARGET].values\n",
+                "\n",
+                "X_train_raw, X_test_raw, y_train, y_test = train_test_split(\n",
+                "    X, y, test_size=0.20, random_state=42, stratify=y\n",
+                ")\n",
+                "\n",
+                "preprocessor = ColumnTransformer(\n",
+                "    transformers=[\n",
+                "        ('num', StandardScaler(), NUMERIC_FEATURES),\n",
+                "        ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), CATEGORICAL_FEATURES)\n",
+                "    ]\n",
+                ")\n",
+                "\n",
+                "X_train = preprocessor.fit_transform(X_train_raw)\n",
+                "X_test = preprocessor.transform(X_test_raw)\n",
+                "\n",
+                "cat_encoder = preprocessor.named_transformers_['cat']\n",
+                "feature_names = NUMERIC_FEATURES + cat_encoder.get_feature_names_out(CATEGORICAL_FEATURES).tolist()\n",
+                "print(f\"Transformed input feature space: {X_train.shape[1]} features.\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## 5. Model Selection: Why XGBoost (Extreme Gradient Boosting)?\n",
+                "### 🎯 Key Reasons for Choosing XGBoost:\n",
+                "1. **Tabular Performance**: Gradient-boosted decision trees consistently outperform neural networks on mixed numerical/categorical tabular datasets.\n",
+                "2. **Non-Linear Interactions**: In fraud detection, risks arise at complex intersections (e.g. *Incident within 7 days of policy creation + At-Fault policy holder + Absence of police report*). Decision trees map these interactions naturally.\n",
+                "3. **Loss-Function Imbalance Control**: Fraud datasets are naturally skewed. XGBoost's `scale_pos_weight = count(negative) / count(positive)` directly reweights the gradient step for the minority class.\n",
+                "4. **Regularization Against Overfitting**: Built-in tree depth limits (`max_depth`), column subsampling (`colsample_bytree`), and $L_1$/$L_2$ leaf weights penalize noise.\n",
+                "5. **Exact Polynomial SHAP Computation**: XGBoost models can be explained via Lundberg's `TreeExplainer` in $O(TLD^2)$ polynomial time rather than exponential sampling time, enabling real-time per-claim explainability in production APIs."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "pos_count = int(np.sum(y_train))\n",
+                "neg_count = len(y_train) - pos_count\n",
+                "scale_pos_weight = float(neg_count / max(pos_count, 1))\n",
+                "print(f\"Calculated scale_pos_weight: {scale_pos_weight:.3f}\")\n",
+                "\n",
+                "model = xgb.XGBClassifier(\n",
+                "    n_estimators=160,\n",
+                "    max_depth=4,\n",
+                "    learning_rate=0.07,\n",
+                "    subsample=0.85,\n",
+                "    colsample_bytree=0.85,\n",
+                "    scale_pos_weight=scale_pos_weight,\n",
+                "    random_state=42,\n",
+                "    eval_metric='logloss'\n",
+                ")\n",
+                "\n",
+                "model.fit(X_train, y_train)\n",
+                "print(\"XGBoost Classifier successfully trained!\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## 6. Held-Out Evaluation on Unseen Test Data (20%)"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "y_prob = model.predict_proba(X_test)[:, 1]\n",
+                "y_pred = (y_prob >= 0.48).astype(int)\n",
+                "\n",
+                "print(\"=== HELD-OUT CLASSIFICATION REPORT ===\")\n",
+                "print(classification_report(y_test, y_pred, target_names=['Legitimate (0)', 'Fraud (1)']))\n",
+                "\n",
+                "print(f\"Accuracy:  {accuracy_score(y_test, y_pred)*100:.2f}%\")\n",
+                "print(f\"Precision: {precision_score(y_test, y_pred)*100:.2f}%\")\n",
+                "print(f\"Recall:    {recall_score(y_test, y_pred)*100:.2f}%\")\n",
+                "print(f\"F1 Score:  {f1_score(y_test, y_pred):.4f}\")\n",
+                "print(f\"ROC-AUC:   {roc_auc_score(y_test, y_prob):.4f}\")"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "fig, ax = plt.subplots(1, 2, figsize=(13, 5))\n",
+                "\n",
+                "# Confusion Matrix\n",
+                "cm = confusion_matrix(y_test, y_pred)\n",
+                "cax = ax[0].matshow(cm, cmap=plt.cm.Blues, alpha=0.8)\n",
+                "for i in range(cm.shape[0]):\n",
+                "    for j in range(cm.shape[1]):\n",
+                "        ax[0].text(x=j, y=i, s=cm[i, j], va='center', ha='center', size='xx-large', weight='bold')\n",
+                "ax[0].set_xticks([0, 1])\n",
+                "ax[0].set_yticks([0, 1])\n",
+                "ax[0].set_xticklabels(['Pred Legit', 'Pred Fraud'])\n",
+                "ax[0].set_yticklabels(['Actual Legit', 'Actual Fraud'])\n",
+                "ax[0].set_title('Confusion Matrix', fontsize=12, pad=15, weight='bold')\n",
+                "\n",
+                "# ROC Curve\n",
+                "fpr, tpr, _ = roc_curve(y_test, y_prob)\n",
+                "ax[1].plot(fpr, tpr, color='#4f46e5', lw=2.5, label=f'ROC-AUC = {roc_auc_score(y_test, y_prob):.3f}')\n",
+                "ax[1].plot([0, 1], [0, 1], color='#94a3b8', linestyle='--')\n",
+                "ax[1].set_xlabel('False Positive Rate')\n",
+                "ax[1].set_ylabel('True Positive Rate (Recall)')\n",
+                "ax[1].set_title('Receiver Operating Characteristic (ROC)', fontsize=12, weight='bold')\n",
+                "ax[1].legend(loc='lower right')\n",
+                "ax[1].grid(True, alpha=0.3)\n",
+                "\n",
+                "plt.tight_layout()\n",
+                "plt.show()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## 7. Model Explainability with SHAP (`TreeExplainer`)\n",
+                "SHAP values quantify each feature's contribution to the delta between the base prediction and the actual model output."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "explainer = shap.TreeExplainer(model)\n",
+                "shap_values = explainer.shap_values(X_test)\n",
+                "print(f\"SHAP Explainer initialized. Output dimensions: {shap_values.shape}\")"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "# Global Feature Importance via Mean Absolute SHAP\n",
+                "mean_abs_shap = np.mean(np.abs(shap_values), axis=0)\n",
+                "top_indices = np.argsort(mean_abs_shap)[::-1][:10]\n",
+                "\n",
+                "plt.figure(figsize=(9, 5))\n",
+                "top_names = [feature_names[i].replace('cat__', '').replace('num__', '') for i in top_indices]\n",
+                "top_scores = [mean_abs_shap[i] for i in top_indices]\n",
+                "\n",
+                "plt.barh(top_names[::-1], top_scores[::-1], color='#6366f1')\n",
+                "plt.xlabel('Mean Absolute SHAP Impact (|SHAP|)')\n",
+                "plt.title('Top 10 Global Features Driving Fraud Prediction', fontsize=12, weight='bold')\n",
+                "plt.grid(axis='x', alpha=0.3)\n",
+                "plt.tight_layout()\n",
+                "plt.show()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## 8. Local Inference: Explaining an Individual Claim (Why was it flagged?)\n",
+                "Here is how FraudShield AI explains an individual claim for insurance underwriters and reviewers."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "claim_idx = 0\n",
+                "claim_shap = shap_values[claim_idx]\n",
+                "claim_prob = y_prob[claim_idx]\n",
+                "\n",
+                "results = []\n",
+                "for fname, val in zip(feature_names, claim_shap):\n",
+                "    results.append({\n",
+                "        'feature': fname.replace('cat__', '').replace('num__', ''),\n",
+                "        'shap_value': round(float(val), 4),\n",
+                "        'signal': 'Increases Fraud Risk (Alert)' if val > 0 else 'Reduces Fraud Risk (Safe)'\n",
+                "    })\n",
+                "\n",
+                "res_df = pd.DataFrame(results).sort_values(by='shap_value', ascending=False)\n",
+                "\n",
+                "print(f\"Examining Claim #{claim_idx + 1}:\")\n",
+                "print(f\"Predicted Fraud Score: {claim_prob*100:.1f}% -> Tier: {'HIGH' if claim_prob >= 0.65 else 'MEDIUM' if claim_prob >= 0.35 else 'LOW'}\")\n",
+                "print(\"\\n--- Top 3 Fraud Drivers (Pushing Score UP) ---\")\n",
+                "print(res_df[res_df['shap_value'] > 0].head(3))\n",
+                "print(\"\\n--- Top 2 Mitigating Factors (Pulling Score DOWN) ---\")\n",
+                "print(res_df[res_df['shap_value'] < 0].tail(2))"
+            ]
+        }
+    ],
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {
+            "codemirror_mode": {"name": "ipython", "version": 3},
+            "file_extension": ".py",
+            "mimetype": "text/x-python",
+            "name": "python",
+            "nbformat": 4,
+            "nbformat_minor": 5
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 5
+}
+
+with open("ml/fraud_detection_model.ipynb", "w", encoding="utf-8") as f:
+    json.dump(notebook, f, indent=2)
+
+print("Generated ml/fraud_detection_model.ipynb successfully!")
